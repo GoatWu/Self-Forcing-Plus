@@ -13,6 +13,8 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
         denoising_step_list: List[int],
         scheduler: SchedulerInterface,
         generator: WanDiffusionWrapper,
+        denoising_step_from: int,
+        denoising_step_to: int
     ):
         super().__init__()
         self.model_name = model_name
@@ -21,6 +23,8 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
         self.denoising_step_list = denoising_step_list
         if self.denoising_step_list[-1] == 0:
             self.denoising_step_list = self.denoising_step_list[:-1]
+        self.denoising_step_from = denoising_step_from
+        self.denoising_step_to = denoising_step_to
 
     def generate_and_sync_list(self, num_denoising_steps, device):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -39,7 +43,7 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
         dist.broadcast(indices, src=0)  # Broadcast the random indices to all ranks
         return indices.tolist()
 
-    def inference_with_trajectory(self, noise: torch.Tensor, clip_fea, y, **conditional_dict) -> torch.Tensor:
+    def inference_with_trajectory(self, noise: torch.Tensor, y, **conditional_dict) -> torch.Tensor:
         """
         Perform inference on the given noise and text prompts.
         Inputs:
@@ -69,7 +73,6 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
                         noisy_image_or_video=noisy_image_or_video,
                         conditional_dict=conditional_dict,
                         timestep=timestep,
-                        clip_fea=clip_fea,
                         y=y
                     )  # [B, F, C, H, W]
 
@@ -86,19 +89,21 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
                     noisy_image_or_video=noisy_image_or_video,
                     conditional_dict=conditional_dict,
                     timestep=timestep,
-                    clip_fea=clip_fea,
                     y=y
                 )  # [B, F, C, H, W]
                 break
 
         if exit_flags[0] == len(self.denoising_step_list) - 1:
-            denoised_timestep_to = 0
-            denoised_timestep_from = 1000 - torch.argmin(
-                (self.scheduler.timesteps.cuda() - self.denoising_step_list[exit_flags[0]].cuda()).abs(), dim=0).item()
+            denoised_timestep_to = self.denoising_step_to
+            denoised_timestep_from = self.denoising_step_from
+            # denoised_timestep_from = 1000 - torch.argmin(
+            #     (self.scheduler.timesteps.cuda() - self.denoising_step_list[exit_flags[0]].cuda()).abs(), dim=0).item()
         else:
             denoised_timestep_to = 1000 - torch.argmin(
                 (self.scheduler.timesteps.cuda() - self.denoising_step_list[exit_flags[0] + 1].cuda()).abs(), dim=0).item()
-            denoised_timestep_from = 1000 - torch.argmin(
-                (self.scheduler.timesteps.cuda() - self.denoising_step_list[exit_flags[0]].cuda()).abs(), dim=0).item()
+            denoised_timestep_to = max(denoised_timestep_to, self.denoising_step_to)
+            denoised_timestep_from = self.denoising_step_from
+            # denoised_timestep_from = 1000 - torch.argmin(
+            #     (self.scheduler.timesteps.cuda() - self.denoising_step_list[exit_flags[0]].cuda()).abs(), dim=0).item()
 
         return denoised_pred, denoised_timestep_from, denoised_timestep_to

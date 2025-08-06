@@ -231,12 +231,6 @@ class WanI2VCrossAttention(WanSelfAttention):
                  eps=1e-6):
         super().__init__(dim, num_heads, window_size, qk_norm, eps)
 
-        self.k_img = nn.Linear(dim, dim)
-        self.v_img = nn.Linear(dim, dim)
-        # self.alpha = nn.Parameter(torch.zeros((1, )))
-        self.norm_k_img = WanRMSNorm(
-            dim, eps=eps) if qk_norm else nn.Identity()
-
     def forward(self, x, context, context_lens):
         r"""
         Args:
@@ -244,24 +238,17 @@ class WanI2VCrossAttention(WanSelfAttention):
             context(Tensor): Shape [B, L2, C]
             context_lens(Tensor): Shape [B]
         """
-        context_img = context[:, :257]
-        context = context[:, 257:]
         b, n, d = x.size(0), self.num_heads, self.head_dim
 
         # compute query, key, value
         q = self.norm_q(self.q(x)).view(b, -1, n, d)
         k = self.norm_k(self.k(context)).view(b, -1, n, d)
         v = self.v(context).view(b, -1, n, d)
-        k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
-        v_img = self.v_img(context_img).view(b, -1, n, d)
-        img_x = flash_attention(q, k_img, v_img, k_lens=None)
         # compute attention
         x = flash_attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
-        img_x = img_x.flatten(2)
-        x = x + img_x
         x = self.o(x)
         return x
 
@@ -612,9 +599,6 @@ class WanModel(ModelMixin, ConfigMixin):
         ],
             dim=1)
 
-        if model_type == 'i2v':
-            self.img_emb = MLPProj(1280, dim)
-
         # initialize weights
         self.init_weights()
 
@@ -645,7 +629,6 @@ class WanModel(ModelMixin, ConfigMixin):
         register_tokens=None,
         cls_pred_branch=None,
         gan_ca_blocks=None,
-        clip_fea=None,
         y=None,
     ):
         r"""
@@ -660,8 +643,6 @@ class WanModel(ModelMixin, ConfigMixin):
                 List of text embeddings each with shape [L, C]
             seq_len (`int`):
                 Maximum sequence length for positional encoding
-            clip_fea (Tensor, *optional*):
-                CLIP image features for image-to-video mode
             y (List[Tensor], *optional*):
                 Conditional video inputs for image-to-video mode, same shape as x
 
@@ -670,7 +651,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
         """
         if self.model_type == 'i2v':
-            assert clip_fea is not None and y is not None
+            assert y is not None
         # params
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
@@ -706,10 +687,6 @@ class WanModel(ModelMixin, ConfigMixin):
                     [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
                 for u in context
             ]))
-
-        if clip_fea is not None:
-            context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
-            context = torch.concat([context_clip, context], dim=1)
 
         # arguments
         kwargs = dict(
@@ -778,7 +755,6 @@ class WanModel(ModelMixin, ConfigMixin):
         seq_len,
         register_tokens,
         cls_pred_branch,
-        clip_fea=None,
         y=None,
     ):
         r"""
@@ -793,8 +769,6 @@ class WanModel(ModelMixin, ConfigMixin):
                 List of text embeddings each with shape [L, C]
             seq_len (`int`):
                 Maximum sequence length for positional encoding
-            clip_fea (Tensor, *optional*):
-                CLIP image features for image-to-video mode
             y (List[Tensor], *optional*):
                 Conditional video inputs for image-to-video mode, same shape as x
 
@@ -803,7 +777,7 @@ class WanModel(ModelMixin, ConfigMixin):
                 List of video features with original input shapes [C_block, F, H / 8, W / 8]
         """
         if self.model_type == 'i2v':
-            assert clip_fea is not None and y is not None
+            assert y is not None
         # params
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
@@ -839,10 +813,6 @@ class WanModel(ModelMixin, ConfigMixin):
                     [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
                 for u in context
             ]))
-
-        if clip_fea is not None:
-            context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
-            context = torch.concat([context_clip, context], dim=1)
 
         # arguments
         kwargs = dict(

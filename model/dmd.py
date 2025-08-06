@@ -1,3 +1,4 @@
+from builtins import NotImplementedError
 from pipeline import SelfForcingTrainingPipeline
 import torch.nn.functional as F
 from typing import Optional, Tuple
@@ -57,7 +58,6 @@ class DMD(SelfForcingModel):
         timestep: torch.Tensor,
         conditional_dict: dict, unconditional_dict: dict,
         normalization: bool = True,
-        clip_fea = None,
         y = None
     ) -> Tuple[torch.Tensor, dict]:
         """
@@ -78,7 +78,6 @@ class DMD(SelfForcingModel):
             noisy_image_or_video=noisy_image_or_video,
             conditional_dict=conditional_dict,
             timestep=timestep,
-            clip_fea=clip_fea,
             y=y
         )
 
@@ -87,7 +86,6 @@ class DMD(SelfForcingModel):
                 noisy_image_or_video=noisy_image_or_video,
                 conditional_dict=unconditional_dict,
                 timestep=timestep,
-                clip_fea=clip_fea,
                 y=y
             )
             pred_fake_image = pred_fake_image_cond + (
@@ -103,7 +101,6 @@ class DMD(SelfForcingModel):
             noisy_image_or_video=noisy_image_or_video,
             conditional_dict=conditional_dict,
             timestep=timestep,
-            clip_fea=clip_fea,
             y=y
         )
 
@@ -111,7 +108,6 @@ class DMD(SelfForcingModel):
             noisy_image_or_video=noisy_image_or_video,
             conditional_dict=unconditional_dict,
             timestep=timestep,
-            clip_fea=clip_fea,
             y=y
         )
 
@@ -143,7 +139,6 @@ class DMD(SelfForcingModel):
         gradient_mask: Optional[torch.Tensor] = None,
         denoised_timestep_from: int = 0,
         denoised_timestep_to: int = 0,
-        clip_fea: torch.Tensor = None,
         y: torch.Tensor = None
     ) -> Tuple[torch.Tensor, dict]:
         """
@@ -163,8 +158,10 @@ class DMD(SelfForcingModel):
 
         with torch.no_grad():
             # Step 1: Randomly sample timestep based on the given schedule and corresponding noise
-            min_timestep = denoised_timestep_to if self.ts_schedule and denoised_timestep_to is not None else self.min_score_timestep
-            max_timestep = denoised_timestep_from if self.ts_schedule_max and denoised_timestep_from is not None else self.num_train_timestep
+            # min_timestep = denoised_timestep_to if self.ts_schedule and denoised_timestep_to is not None else self.min_score_timestep
+            # max_timestep = denoised_timestep_from if self.ts_schedule_max and denoised_timestep_from is not None else self.num_train_timestep
+            min_timestep = self.denoising_step_to
+            max_timestep = self.denoising_step_from
             timestep = self._get_timestep(
                 min_timestep,
                 max_timestep,
@@ -195,7 +192,6 @@ class DMD(SelfForcingModel):
                 timestep=timestep,
                 conditional_dict=conditional_dict,
                 unconditional_dict=unconditional_dict,
-                clip_fea=clip_fea,
                 y=y
             )
 
@@ -214,7 +210,6 @@ class DMD(SelfForcingModel):
         unconditional_dict: dict,
         clean_latent: torch.Tensor,
         initial_latent: torch.Tensor = None,
-        clip_fea: torch.Tensor = None,
         y: torch.Tensor = None
     ) -> Tuple[torch.Tensor, dict]:
         """
@@ -236,7 +231,6 @@ class DMD(SelfForcingModel):
             image_or_video_shape=image_or_video_shape,
             conditional_dict=conditional_dict,
             initial_latent=initial_latent,
-            clip_fea=clip_fea,
             y=y
         )
 
@@ -248,7 +242,6 @@ class DMD(SelfForcingModel):
             gradient_mask=gradient_mask,
             denoised_timestep_from=denoised_timestep_from,
             denoised_timestep_to=denoised_timestep_to,
-            clip_fea=clip_fea,
             y=y
         )
 
@@ -263,7 +256,6 @@ class DMD(SelfForcingModel):
         unconditional_dict: dict,
         clean_latent: torch.Tensor,
         initial_latent: torch.Tensor = None,
-        clip_fea: torch.Tensor = None,
         y: torch.Tensor = None
     ) -> Tuple[torch.Tensor, dict]:
         """
@@ -287,13 +279,14 @@ class DMD(SelfForcingModel):
                 image_or_video_shape=image_or_video_shape,
                 conditional_dict=conditional_dict,
                 initial_latent=initial_latent,
-                clip_fea=clip_fea,
                 y=y
             )
 
         # Step 2: Compute the fake prediction
-        min_timestep = denoised_timestep_to if self.ts_schedule and denoised_timestep_to is not None else self.min_score_timestep
-        max_timestep = denoised_timestep_from if self.ts_schedule_max and denoised_timestep_from is not None else self.num_train_timestep
+        # min_timestep = denoised_timestep_to if self.ts_schedule and denoised_timestep_to is not None else self.min_score_timestep
+        # max_timestep = denoised_timestep_from if self.ts_schedule_max and denoised_timestep_from is not None else self.num_train_timestep
+        min_timestep = self.denoising_step_to
+        max_timestep = self.denoising_step_from
         critic_timestep = self._get_timestep(
             min_timestep,
             max_timestep,
@@ -320,27 +313,28 @@ class DMD(SelfForcingModel):
             noisy_image_or_video=noisy_generated_image,
             conditional_dict=conditional_dict,
             timestep=critic_timestep,
-            clip_fea=clip_fea,
             y=y
         )
 
         # Step 3: Compute the denoising loss for the fake critic
         if self.args.denoising_loss_type == "flow":
             from utils.wan_wrapper import WanDiffusionWrapper
-            flow_pred = WanDiffusionWrapper._convert_x0_to_flow_pred(
+            flow_pred = WanDiffusionWrapper._convert_x_start_to_flow_pred(
                 scheduler=self.scheduler,
-                x0_pred=pred_fake_image.flatten(0, 1),
+                x_start_pred=pred_fake_image.flatten(0, 1),
                 xt=noisy_generated_image.flatten(0, 1),
-                timestep=critic_timestep.flatten(0, 1)
+                timestep=critic_timestep.flatten(0, 1),
+                start_timestep=self.fake_score.start_timestep
             )
             pred_fake_noise = None
         else:
-            flow_pred = None
-            pred_fake_noise = self.scheduler.convert_x0_to_noise(
-                x0=pred_fake_image.flatten(0, 1),
-                xt=noisy_generated_image.flatten(0, 1),
-                timestep=critic_timestep.flatten(0, 1)
-            ).unflatten(0, image_or_video_shape[:2])
+            raise NotImplementedError("Denoising loss type not implemented")
+            # flow_pred = None
+            # pred_fake_noise = self.scheduler.convert_x0_to_noise(
+            #     x0=pred_fake_image.flatten(0, 1),
+            #     xt=noisy_generated_image.flatten(0, 1),
+            #     timestep=critic_timestep.flatten(0, 1)
+            # ).unflatten(0, image_or_video_shape[:2])
 
         denoising_loss = self.denoising_loss_func(
             x=generated_image.flatten(0, 1),

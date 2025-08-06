@@ -105,7 +105,7 @@ class SchedulerInterface(ABC):
 
 class FlowMatchScheduler():
 
-    def __init__(self, num_inference_steps=100, num_train_timesteps=1000, shift=3.0, sigma_max=1.0, sigma_min=0.003 / 1.002, inverse_timesteps=False, extra_one_step=False, reverse_sigmas=False):
+    def __init__(self, num_inference_steps=100, num_train_timesteps=1000, shift=3.0, sigma_max=1.0, sigma_min=0.003 / 1.002, inverse_timesteps=False, extra_one_step=False, reverse_sigmas=False, start_timestep=0):
         self.num_train_timesteps = num_train_timesteps
         self.shift = shift
         self.sigma_max = sigma_max
@@ -113,6 +113,7 @@ class FlowMatchScheduler():
         self.inverse_timesteps = inverse_timesteps
         self.extra_one_step = extra_one_step
         self.reverse_sigmas = reverse_sigmas
+        self.start_timestep = torch.tensor([start_timestep])
         self.set_timesteps(num_inference_steps)
 
     def set_timesteps(self, num_inference_steps=100, denoising_strength=1.0, training=False):
@@ -192,3 +193,32 @@ class FlowMatchScheduler():
             (self.timesteps.unsqueeze(1) - timestep.unsqueeze(0)).abs(), dim=0)
         weights = self.linear_timesteps_weights[timestep_id]
         return weights
+
+
+if __name__ == '__main__':
+    scheduler = FlowMatchScheduler(
+        shift=5.0, sigma_min=0.0, extra_one_step=True
+    )
+    scheduler.set_timesteps(1000)
+    print("timesteps:")
+    print(scheduler.timesteps)
+    print("sigmas:")
+    print(scheduler.sigmas)
+
+    target_timesteps = torch.tensor([1000, 875, 750, 625, 500, 375, 250, 125])
+
+    target_timesteps = 5.0 * (target_timesteps / 1000) / \
+                    (1 + (5.0 - 1) * (target_timesteps / 1000)) * 1000
+
+    print("target_timesteps:")
+    print(target_timesteps)
+
+    for step in target_timesteps:
+        step = step.item()
+        timestep_id = torch.argmin(
+            (scheduler.timesteps.unsqueeze(0) - torch.tensor([step]).unsqueeze(1)).abs(), dim=1)
+        print("================================================")
+        print(f"step: {step}, timestep_id: {timestep_id}")
+        print(f"sigma: {scheduler.sigmas[timestep_id]}")
+        print(f"timestep: {scheduler.timesteps[timestep_id]}")
+

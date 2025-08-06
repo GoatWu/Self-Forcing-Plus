@@ -64,7 +64,6 @@ class SelfForcingTrainingPipeline:
     def inference_with_trajectory(
             self,
             noise: torch.Tensor,
-            clip_fea: Optional[torch.Tensor] = None,
             y: Optional[torch.Tensor] = None,
             initial_latent: Optional[torch.Tensor] = None,
             return_sim_step: bool = False,

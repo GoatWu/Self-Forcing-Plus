@@ -100,14 +100,6 @@ class Trainer:
         )
 
         if self.config.i2v:
-            self.model.image_encoder = fsdp_wrap(
-                self.model.image_encoder,
-                sharding_strategy=config.sharding_strategy,
-                mixed_precision=config.mixed_precision,
-                wrap_strategy=config.image_encoder_fsdp_wrap_strategy,
-                min_num_params=int(5e6),
-                cpu_offload=getattr(config, "image_encoder_cpu_offload", False)
-            )
             self.model.vae = self.model.vae.to(
                 device=self.device, dtype=torch.bfloat16)
 
@@ -296,10 +288,8 @@ class Trainer:
 
             if self.config.i2v:
                 img = batch["img"].to(self.device).squeeze(0)
-                clip_fea = self.model.image_encoder(img)
                 y = self.model.vae.run_vae_encoder(img)
             else:
-                clip_fea = None
                 y = None
 
         # Step 3: Store gradients for the generator (if training the generator)
@@ -310,7 +300,6 @@ class Trainer:
                 unconditional_dict=unconditional_dict,
                 clean_latent=clean_latent,
                 initial_latent=image_latent if self.config.i2v else None,
-                clip_fea=clip_fea,
                 y=y
             )
 
@@ -334,7 +323,6 @@ class Trainer:
             unconditional_dict=unconditional_dict,
             clean_latent=clean_latent,
             initial_latent=image_latent if self.config.i2v else None,
-            clip_fea=clip_fea,
             y=y
         )
 

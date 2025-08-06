@@ -14,8 +14,11 @@ class BaseModel(nn.Module):
         super().__init__()
         self.is_causal = args.generator_type == "causal"
         self.i2v = args.i2v
-        self._initialize_models(args, device)
+        self.denoising_step_from = args.denoising_step_from
+        self.denoising_step_to = args.denoising_step_to
 
+        self._initialize_models(args, device)
+        
         self.device = device
         self.args = args
         self.dtype = torch.bfloat16 if args.mixed_precision else torch.float32
@@ -33,14 +36,23 @@ class BaseModel(nn.Module):
         self.generator = WanDiffusionWrapper(
             **getattr(args, "model_kwargs", {}),
             model_name=self.generator_name,
-            is_causal=self.is_causal
+            is_causal=self.is_causal,
+            start_timestep=self.denoising_step_to
         )
         self.generator.model.requires_grad_(True)
 
-        self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, is_causal=False)
+        self.real_score = WanDiffusionWrapper(
+            model_name=self.real_model_name,
+            is_causal=False,
+            start_timestep=self.denoising_step_to
+        )
         self.real_score.model.requires_grad_(False)
 
-        self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name, is_causal=False)
+        self.fake_score = WanDiffusionWrapper(
+            model_name=self.fake_model_name,
+            is_causal=False,
+            start_timestep=self.denoising_step_to
+        )
         self.fake_score.model.requires_grad_(True)
 
         self.text_encoder = WanTextEncoder(model_name=self.generator_name)
@@ -48,10 +60,6 @@ class BaseModel(nn.Module):
 
         self.vae = WanVAEWrapper(model_name=self.generator_name)
         self.vae.requires_grad_(False)
-
-        if self.i2v:
-            self.image_encoder = WanCLIPEncoder(model_name=self.generator_name)
-            self.image_encoder.requires_grad_(False)
 
         self.scheduler = self.generator.get_scheduler()
         self.scheduler.timesteps = self.scheduler.timesteps.to(device)
@@ -116,7 +124,6 @@ class SelfForcingModel(BaseModel):
         image_or_video_shape,
         conditional_dict: dict,
         initial_latent: torch.tensor = None,
-        clip_fea: torch.Tensor = None,
         y: torch.Tensor = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -162,7 +169,6 @@ class SelfForcingModel(BaseModel):
         pred_image_or_video, denoised_timestep_from, denoised_timestep_to = self._consistency_backward_simulation(
             noise=torch.randn(noise_shape,
                               device=self.device, dtype=self.dtype),
-            clip_fea=clip_fea,
             y=y,
             **conditional_dict
         )
@@ -197,7 +203,6 @@ class SelfForcingModel(BaseModel):
     def _consistency_backward_simulation(
         self,
         noise: torch.Tensor,
-        clip_fea: torch.Tensor,
         y: torch.Tensor,
         **conditional_dict: dict
     ) -> torch.Tensor:
@@ -217,7 +222,7 @@ class SelfForcingModel(BaseModel):
             self._initialize_inference_pipeline()
 
         return self.inference_pipeline.inference_with_trajectory(
-            noise=noise, clip_fea=clip_fea, y=y, **conditional_dict
+            noise=noise, y=y, **conditional_dict
         )
 
     def _initialize_inference_pipeline(self):
@@ -245,4 +250,6 @@ class SelfForcingModel(BaseModel):
                 denoising_step_list=self.denoising_step_list,
                 scheduler=self.scheduler,
                 generator=self.generator,
+                denoising_step_from=self.denoising_step_from,
+                denoising_step_to=self.denoising_step_to
             )
