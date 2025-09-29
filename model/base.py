@@ -1,8 +1,10 @@
 from typing import Tuple
 from einops import rearrange
 from torch import nn
+from safetensors.torch import load_file
 import torch.distributed as dist
 import torch
+import os
 
 from pipeline import SelfForcingTrainingPipeline, BidirectionalTrainingPipeline
 from utils.loss import get_denoising_loss
@@ -14,8 +16,9 @@ class BaseModel(nn.Module):
         super().__init__()
         self.is_causal = args.generator_type == "causal"
         self.i2v = args.i2v
-        self.denoising_step_from = args.denoising_step_from
-        self.denoising_step_to = args.denoising_step_to
+        self.training_target = args.training_target
+        self.timestep_shift = getattr(args, "timestep_shift", 1.0)
+        self.boundary_step = args.boundary_step
 
         self._initialize_models(args, device)
         
@@ -24,36 +27,55 @@ class BaseModel(nn.Module):
         self.dtype = torch.bfloat16 if args.mixed_precision else torch.float32
         if hasattr(args, "denoising_step_list"):
             self.denoising_step_list = torch.tensor(args.denoising_step_list, dtype=torch.long)
-            if args.warp_denoising_step:
-                timesteps = torch.cat((self.scheduler.timesteps.cpu(), torch.tensor([0], dtype=torch.float32)))
-                self.denoising_step_list = timesteps[1000 - self.denoising_step_list]
+
+        self.x_bound = None
 
     def _initialize_models(self, args, device):
-        self.real_model_name = getattr(args, "real_name", "Wan2.1-T2V-14B")
-        self.fake_model_name = getattr(args, "fake_name", "Wan2.1-T2V-14B")
-        self.generator_name = getattr(args, "generator_name", "Wan2.1-T2V-14B")
+        self.real_model_name = getattr(args, "real_name", "Wan2.2-T2V-A14B")
+        self.fake_model_name = getattr(args, "fake_name", "Wan2.2-T2V-A14B")
+        self.generator_name = getattr(args, "generator_name", "Wan2.2-T2V-A14B")
 
         self.generator = WanDiffusionWrapper(
             **getattr(args, "model_kwargs", {}),
             model_name=self.generator_name,
             is_causal=self.is_causal,
-            start_timestep=self.denoising_step_to
+            timestep_bound=self.boundary_step,
+            target=self.training_target
         )
         self.generator.model.requires_grad_(True)
 
         self.real_score = WanDiffusionWrapper(
+            **getattr(args, "model_kwargs", {}),
             model_name=self.real_model_name,
             is_causal=False,
-            start_timestep=self.denoising_step_to
+            timestep_bound=self.boundary_step,
+            target=self.training_target
         )
         self.real_score.model.requires_grad_(False)
 
         self.fake_score = WanDiffusionWrapper(
+            **getattr(args, "model_kwargs", {}),
             model_name=self.fake_model_name,
             is_causal=False,
-            start_timestep=self.denoising_step_to
+            timestep_bound=self.boundary_step,
+            target=self.training_target
         )
         self.fake_score.model.requires_grad_(True)
+
+        if self.training_target == "low_noise":
+            self.high_noise_name = getattr(args, "high_noise_name", "Wan2.2-T2V-A14B")
+            self.high_noise_model = WanDiffusionWrapper(
+                **getattr(args, "model_kwargs", {}),
+                model_name=self.high_noise_name,
+                is_causal=False,
+                timestep_bound=self.boundary_step,
+                target="high_noise"
+            )
+            distill_path = os.path.join("./wan_models", getattr(args, "high_noise_distill_ckpt", ""))
+            weights = load_file(distill_path)
+            weights = {f"model.{k}": v for k, v in weights.items()}
+            self.high_noise_model.load_state_dict(weights, strict=True)
+            self.high_noise_model.model.requires_grad_(False)
 
         self.text_encoder = WanTextEncoder(model_name=self.generator_name)
         self.text_encoder.requires_grad_(False)
@@ -166,39 +188,18 @@ class SelfForcingModel(BaseModel):
         # Sync num_generated_frames across all processes
         noise_shape[1] = num_generated_frames
 
-        pred_image_or_video, denoised_timestep_from, denoised_timestep_to = self._consistency_backward_simulation(
-            noise=torch.randn(noise_shape,
-                              device=self.device, dtype=self.dtype),
+        if self.training_target == "low_noise":
+            noise = self.x_bound.to(self.device).to(self.dtype)
+        elif self.training_target == "high_noise":
+            noise = torch.randn(noise_shape,
+                                device=self.device, dtype=self.dtype)
+
+        flow_pred, pred_image_or_video = self._consistency_backward_simulation(
+            noise=noise,
             y=y,
             **conditional_dict
         )
-        # Slice last 21 frames
-        if pred_image_or_video.shape[1] > 21:
-            with torch.no_grad():
-                # Reencode to get image latent
-                latent_to_decode = pred_image_or_video[:, :-20, ...]
-                # Deccode to video
-                pixels = self.vae.decode_to_pixel(latent_to_decode)
-                frame = pixels[:, -1:, ...].to(self.dtype)
-                frame = rearrange(frame, "b t c h w -> b c t h w")
-                # Encode frame to get image latent
-                image_latent = self.vae.encode_to_latent(frame).to(self.dtype)
-            pred_image_or_video_last_21 = torch.cat([image_latent, pred_image_or_video[:, -20:, ...]], dim=1)
-        else:
-            pred_image_or_video_last_21 = pred_image_or_video
-
-        if num_generated_frames != min_num_frames:
-            # Currently, we do not use gradient for the first chunk, since it contains image latents
-            gradient_mask = torch.ones_like(pred_image_or_video_last_21, dtype=torch.bool)
-            if self.args.independent_first_frame:
-                gradient_mask[:, :1] = False
-            else:
-                gradient_mask[:, :self.num_frame_per_block] = False
-        else:
-            gradient_mask = None
-
-        pred_image_or_video_last_21 = pred_image_or_video_last_21.to(self.dtype)
-        return pred_image_or_video_last_21, gradient_mask, denoised_timestep_from, denoised_timestep_to
+        return flow_pred, pred_image_or_video, None, noise
 
     def _consistency_backward_simulation(
         self,
@@ -250,6 +251,6 @@ class SelfForcingModel(BaseModel):
                 denoising_step_list=self.denoising_step_list,
                 scheduler=self.scheduler,
                 generator=self.generator,
-                denoising_step_from=self.denoising_step_from,
-                denoising_step_to=self.denoising_step_to
+                boundary_step=self.boundary_step,
+                training_target=self.training_target
             )

@@ -55,7 +55,6 @@ def main():
             new_key = key
 
         new_key = new_key.replace("_fsdp_wrapped_module.", "").replace("_checkpoint_wrapped_module.", "").replace("_orig_mod.", "")
-        print(f"{key} -> {new_key}")
         
         # Convert tensor to bf16 if requested
         if convert_to_bf16 and isinstance(value, torch.Tensor) and value.is_floating_point():

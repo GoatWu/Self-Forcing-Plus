@@ -23,6 +23,18 @@ class SchedulerInterface(ABC):
         """
         pass
 
+    @abstractmethod
+    def add_noise_high(
+        self, clean_latent, noise, timestep, timestep_start
+    ):
+        pass
+
+    @abstractmethod
+    def add_noise_low(
+        self, clean_latent, noise, timestep, timestep_start
+    ):
+        pass
+
     def convert_x0_to_noise(
         self, x0: torch.Tensor, xt: torch.Tensor,
         timestep: torch.Tensor
@@ -105,7 +117,7 @@ class SchedulerInterface(ABC):
 
 class FlowMatchScheduler():
 
-    def __init__(self, num_inference_steps=100, num_train_timesteps=1000, shift=3.0, sigma_max=1.0, sigma_min=0.003 / 1.002, inverse_timesteps=False, extra_one_step=False, reverse_sigmas=False, start_timestep=0):
+    def __init__(self, num_inference_steps=100, num_train_timesteps=1000, shift=3.0, sigma_max=1.0, sigma_min=0.003 / 1.002, inverse_timesteps=False, extra_one_step=False, reverse_sigmas=False):
         self.num_train_timesteps = num_train_timesteps
         self.shift = shift
         self.sigma_max = sigma_max
@@ -113,7 +125,6 @@ class FlowMatchScheduler():
         self.inverse_timesteps = inverse_timesteps
         self.extra_one_step = extra_one_step
         self.reverse_sigmas = reverse_sigmas
-        self.start_timestep = torch.tensor([start_timestep])
         self.set_timesteps(num_inference_steps)
 
     def set_timesteps(self, num_inference_steps=100, denoising_strength=1.0, training=False):
@@ -157,7 +168,7 @@ class FlowMatchScheduler():
         prev_sample = sample + model_output * (sigma_ - sigma)
         return prev_sample
 
-    def add_noise(self, original_samples, noise, timestep):
+    def add_noise(self, original_samples, noise, timestep_id):
         """
         Diffusion forward corruption process.
         Input:
@@ -166,12 +177,37 @@ class FlowMatchScheduler():
             - timestep: the timestep with shape [B*T]
         Output: the corrupted latent with shape [B*T, C, H, W]
         """
-        if timestep.ndim == 2:
-            timestep = timestep.flatten(0, 1)
+        self.sigmas = self.sigmas.to(noise.device)
+        sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        sample = (1 - sigma) * original_samples + sigma * noise
+        return sample.type_as(noise)
+
+    @staticmethod
+    def calculate_alpha_beta_high(sigma, sigma_bound):
+        alpha = (1 - sigma) / (1 - sigma_bound)
+        beta = torch.sqrt(sigma ** 2 - (alpha * sigma_bound) ** 2)
+        return alpha, beta
+
+    @staticmethod
+    def calculate_alpha_beta_low(sigma, sigma_bound):
+        beta = sigma / sigma_bound
+        alpha = 1 - beta
+        return alpha, beta
+    
+    def add_noise_high(self, original_samples, noise, timestep_id, timestep_bound):
+        timestep_bound = timestep_bound.to(self.timesteps.device)
         self.sigmas = self.sigmas.to(noise.device)
         self.timesteps = self.timesteps.to(noise.device)
-        timestep_id = torch.argmin(
-            (self.timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
+        sigma_t = self.sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        timestep_id_bound = torch.argmin(
+            (self.timesteps.unsqueeze(0) - timestep_bound.unsqueeze(1)).abs(), dim=1)
+        sigma_t_bound = self.sigmas[timestep_id_bound].reshape(-1, 1, 1, 1)
+        alpha, beta = self.calculate_alpha_beta_high(sigma_t, sigma_t_bound)
+        sample = alpha * original_samples + beta * noise
+        return sample.type_as(noise)
+
+    def add_noise_low(self, original_samples, noise, timestep_id, timestep_bound):
+        self.sigmas = self.sigmas.to(noise.device)
         sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1)
         sample = (1 - sigma) * original_samples + sigma * noise
         return sample.type_as(noise)
@@ -200,12 +236,12 @@ if __name__ == '__main__':
         shift=5.0, sigma_min=0.0, extra_one_step=True
     )
     scheduler.set_timesteps(1000)
-    print("timesteps:")
-    print(scheduler.timesteps)
-    print("sigmas:")
-    print(scheduler.sigmas)
 
     target_timesteps = torch.tensor([1000, 875, 750, 625, 500, 375, 250, 125])
+
+    timesteps = torch.cat((scheduler.timesteps.cpu(), torch.tensor([0], dtype=torch.float32)))
+    denoising_step_list = timesteps[1000 - target_timesteps]
+    print(f"denoising_step_list: {denoising_step_list}")
 
     target_timesteps = 5.0 * (target_timesteps / 1000) / \
                     (1 + (5.0 - 1) * (target_timesteps / 1000)) * 1000

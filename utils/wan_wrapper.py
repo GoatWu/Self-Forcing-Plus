@@ -196,12 +196,18 @@ class WanDiffusionWrapper(torch.nn.Module):
             is_causal=False,
             local_attn_size=-1,
             sink_size=0,
-            start_timestep=0,
+            timestep_bound=0,
+            target="high_noise"
     ):
         super().__init__()
         self.model_name = model_name
+        self.target = target
         self.dim = 5120 if "14B" in model_name else 1536
-        self.start_timestep = torch.tensor([start_timestep])
+        self.timestep_shift = timestep_shift
+        self.timestep_bound = torch.tensor([timestep_bound])
+        if self.timestep_shift > 1:
+            self.timestep_bound = self.timestep_shift * \
+                (self.timestep_bound / 1000) / (1 + (self.timestep_shift - 1) * (self.timestep_bound / 1000)) * 1000
 
         if is_causal:
             self.model = CausalWanModel.from_pretrained(
@@ -214,7 +220,7 @@ class WanDiffusionWrapper(torch.nn.Module):
         self.uniform_timestep = not is_causal
 
         self.scheduler = FlowMatchScheduler(
-            shift=timestep_shift, sigma_min=0.0, extra_one_step=True, start_timestep=start_timestep
+            shift=timestep_shift, sigma_min=0.0, extra_one_step=True
         )
         self.scheduler.set_timesteps(1000, training=True)
 
@@ -222,7 +228,7 @@ class WanDiffusionWrapper(torch.nn.Module):
         self.post_init()
 
     def enable_gradient_checkpointing(self) -> None:
-        self.model.enable_gradient_checkpointing()
+        self.model.gradient_checkpointing = True
 
     def adding_cls_branch(self, atten_dim=1536, num_class=4, time_embed_dim=0) -> None:
         # NOTE: This is hard coded for WAN2.1-T2V-1.3B for now!!!!!!!!!!!!!!!!!!!!
@@ -296,46 +302,46 @@ class WanDiffusionWrapper(torch.nn.Module):
         flow_pred = (xt - x0_pred) / sigma_t
         return flow_pred.to(original_dtype)
 
-    def _convert_flow_pred_to_x_start(self, flow_pred: torch.Tensor, xt: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
+    def _convert_flow_pred_to_x_bound(self, flow_pred: torch.Tensor, xt: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
         original_dtype = flow_pred.dtype
-        flow_pred, xt, sigmas, timesteps, start_timestep = map(
+        flow_pred, xt, sigmas, timesteps, timestep_bound = map(
             lambda x: x.double().to(flow_pred.device), [flow_pred, xt,
                                                         self.scheduler.sigmas,
                                                         self.scheduler.timesteps,
-                                                        self.start_timestep]
+                                                        self.timestep_bound]
         )
 
         timestep_id = torch.argmin(
             (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
         sigma_t = sigmas[timestep_id].reshape(-1, 1, 1, 1)
-        timestep_id_start = torch.argmin(
-            (timesteps.unsqueeze(0) - start_timestep.unsqueeze(1)).abs(), dim=1)
-        sigma_t_start = sigmas[timestep_id_start].reshape(-1, 1, 1, 1)
-        x_start_pred = (xt - sigma_t * flow_pred) / sigma_t_start
-        return x_start_pred.to(original_dtype)
+        timestep_id_bound = torch.argmin(
+            (timesteps.unsqueeze(0) - timestep_bound.unsqueeze(1)).abs(), dim=1)
+        sigma_t_bound = sigmas[timestep_id_bound].reshape(-1, 1, 1, 1)
+        x_bound_pred = xt - (sigma_t - sigma_t_bound) * flow_pred
+        return x_bound_pred.to(original_dtype)
     
     @staticmethod
-    def _convert_x_start_to_flow_pred(scheduler, x_start_pred: torch.Tensor, xt: torch.Tensor, timestep: torch.Tensor, start_timestep: torch.Tensor) -> torch.Tensor:
-        original_dtype = x_start_pred.dtype
-        x_start_pred, xt, sigmas, timesteps, start_timestep = map(
-            lambda x: x.double().to(x_start_pred.device), [x_start_pred, xt,
+    def _convert_x_bound_to_flow_pred(scheduler, x_bound_pred: torch.Tensor, xt: torch.Tensor, timestep: torch.Tensor, timestep_bound: torch.Tensor) -> torch.Tensor:
+        original_dtype = x_bound_pred.dtype
+        x_bound_pred, xt, sigmas, timesteps, timestep_bound = map(
+            lambda x: x.double().to(x_bound_pred.device), [x_bound_pred, xt,
                                                       scheduler.sigmas,
                                                       scheduler.timesteps,
-                                                      start_timestep]
+                                                      timestep_bound]
         )
         timestep_id = torch.argmin(
             (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
         sigma_t = sigmas[timestep_id].reshape(-1, 1, 1, 1)
-        timestep_id_start = torch.argmin(
-            (timesteps.unsqueeze(0) - start_timestep.unsqueeze(1)).abs(), dim=1)
-        sigma_t_start = sigmas[timestep_id_start].reshape(-1, 1, 1, 1)
-        flow_pred = (xt - x_start_pred * sigma_t_start) / sigma_t
+        timestep_id_bound = torch.argmin(
+            (timesteps.unsqueeze(0) - timestep_bound.unsqueeze(1)).abs(), dim=1)
+        sigma_t_bound = sigmas[timestep_id_bound].reshape(-1, 1, 1, 1)
+        flow_pred = (xt - x_bound_pred) / (sigma_t - sigma_t_bound)
         return flow_pred.to(original_dtype)
 
     def forward(
         self,
         noisy_image_or_video: torch.Tensor, conditional_dict: dict,
-        timestep: torch.Tensor, kv_cache: Optional[List[dict]] = None,
+        timestep_id: torch.Tensor, kv_cache: Optional[List[dict]] = None,
         crossattn_cache: Optional[List[dict]] = None,
         current_start: Optional[int] = None,
         classify_mode: Optional[bool] = False,
@@ -346,6 +352,9 @@ class WanDiffusionWrapper(torch.nn.Module):
         y: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         prompt_embeds = conditional_dict["prompt_embeds"]
+
+        self.scheduler.timesteps = self.scheduler.timesteps.to(timestep_id.device)
+        timestep = self.scheduler.timesteps[timestep_id]
 
         # [B, F] -> [B]
         if self.uniform_timestep:
@@ -399,27 +408,23 @@ class WanDiffusionWrapper(torch.nn.Module):
                         y=y
                     ).permute(0, 2, 1, 3, 4)
 
-        # pred_x0 = self._convert_flow_pred_to_x0(
-        #     flow_pred=flow_pred.flatten(0, 1),
-        #     xt=noisy_image_or_video.flatten(0, 1),
-        #     timestep=timestep.flatten(0, 1)
-        # ).unflatten(0, flow_pred.shape[:2])
-
-        # if logits is not None:
-        #     return flow_pred, pred_x0, logits
-
-        # return flow_pred, pred_x0
-
-        pred_x_start = self._convert_flow_pred_to_x_start(
-            flow_pred=flow_pred.flatten(0, 1),
-            xt=noisy_image_or_video.flatten(0, 1),
-            timestep=timestep.flatten(0, 1)
-        ).unflatten(0, flow_pred.shape[:2])
+        if self.target == "high_noise":
+            pred_x = self._convert_flow_pred_to_x_bound(
+                flow_pred=flow_pred.flatten(0, 1),
+                xt=noisy_image_or_video.flatten(0, 1),
+                timestep=timestep.flatten(0, 1)
+            ).unflatten(0, flow_pred.shape[:2])
+        elif self.target == "low_noise":
+            pred_x = self._convert_flow_pred_to_x0(
+                flow_pred=flow_pred.flatten(0, 1),
+                xt=noisy_image_or_video.flatten(0, 1),
+                timestep=timestep.flatten(0, 1)
+            ).unflatten(0, flow_pred.shape[:2])
 
         if logits is not None:
-            return flow_pred, pred_x_start, logits
+            return flow_pred, pred_x, logits
 
-        return flow_pred, pred_x_start 
+        return flow_pred, pred_x 
 
     def get_scheduler(self) -> SchedulerInterface:
         """

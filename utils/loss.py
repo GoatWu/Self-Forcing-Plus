@@ -66,7 +66,8 @@ class FlowPredLoss(DenoisingLoss):
         timestep: torch.Tensor,
         **kwargs
     ) -> torch.Tensor:
-        return torch.mean((kwargs["flow_pred"] - (noise - x)) ** 2)
+        # return torch.mean((kwargs["flow_pred"] - (noise - x)) ** 2)
+        return torch.mean((kwargs["flow_pred"] - kwargs["generator_flow_pred"]) ** 2)
 
 
 NAME_TO_CLASS = {

@@ -99,6 +99,15 @@ class Trainer:
             cpu_offload=getattr(config, "text_encoder_cpu_offload", False)
         )
 
+        if self.config.training_target == "low_noise":
+            self.model.high_noise_model = fsdp_wrap(
+                self.model.high_noise_model,
+                sharding_strategy=config.sharding_strategy,
+                mixed_precision=config.mixed_precision,
+                wrap_strategy=config.high_noise_model_fsdp_wrap_strategy
+            )
+            self.high_noise_step_list = torch.tensor(config.high_noise_step_list, dtype=torch.long)
+
         if self.config.i2v:
             self.model.vae = self.model.vae.to(
                 device=self.device, dtype=torch.bfloat16)
@@ -291,6 +300,42 @@ class Trainer:
                 y = self.model.vae.run_vae_encoder(img)
             else:
                 y = None
+
+            if self.config.training_target == "low_noise":
+                noise = torch.randn(
+                    image_or_video_shape, 
+                    device=self.model.device, 
+                    dtype=self.model.dtype
+                )
+                noisy_image_or_video = noise
+                for index, current_timestep in enumerate(self.high_noise_step_list):
+                    timestep_id = 1000 - torch.ones(
+                        noise.shape[:2],
+                        device=noise.device,
+                        dtype=torch.int64
+                    ) * current_timestep
+                    flow_pred, noisy_image_or_video = self.model.high_noise_model(
+                        noisy_image_or_video=noisy_image_or_video,
+                        conditional_dict=conditional_dict,
+                        # timestep=timestep,
+                        timestep_id=timestep_id,
+                        y=y
+                    )
+                    if index != len(self.high_noise_step_list) - 1:
+                        next_timestep_id = 1000 - self.high_noise_step_list[index + 1] * torch.ones(
+                            noise.shape[:2], 
+                            dtype=torch.long, 
+                            device=noise.device
+                        )
+                        noisy_image_or_video = self.model.scheduler.add_noise_high(
+                            noisy_image_or_video.flatten(0, 1),
+                            torch.randn_like(noisy_image_or_video.flatten(0, 1)),
+                            # flow_pred.flatten(0, 1),
+                            # next_timestep.flatten(0, 1),
+                            next_timestep_id.flatten(0, 1),
+                            self.model.high_noise_model.timestep_bound
+                        ).unflatten(0, noisy_image_or_video.shape[:2])
+                self.model.x_bound = noisy_image_or_video
 
         # Step 3: Store gradients for the generator (if training the generator)
         if train_generator:
