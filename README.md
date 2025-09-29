@@ -3,10 +3,13 @@
 
 Self-Forcing-Plus focuses on step distillation and CFG distillation for bidirectional models. Building upon Self-Forcing, we support 4-step T2V-14B model training and higher quality 4-step I2V-14B model training.
 
+## 🔥 News
+- (2025/09) Support Wan2.2-Moe distillation! [wan22](https://github.com/GoatWu/Self-Forcing-Plus/tree/wan22)
+
 | Model Type | Model Link |
 |------------|---------------|
-| T2V-14B | [Huggingface](https://huggingface.co/lightx2v/Wan2.1-T2V-14B-StepDistill-CfgDistill) |
-| I2V-14B-480P | [Huggingface](https://huggingface.co/lightx2v/Wan2.1-I2V-14B-480P-StepDistill-CfgDistill-Lightx2v) |
+| Wan2.1-T2V-14B | [Huggingface](https://huggingface.co/lightx2v/Wan2.1-T2V-14B-StepDistill-CfgDistill) |
+| Wan2.1-I2V-14B-480P | [Huggingface](https://huggingface.co/lightx2v/Wan2.1-I2V-14B-480P-StepDistill-CfgDistill-Lightx2v) |
 
 ## Installation
 Create a conda environment and install dependencies:
@@ -21,8 +24,8 @@ python setup.py develop
 ## Quick Start
 ### Download checkpoints
 ```
-huggingface-cli download Wan-AI/Wan2.1-T2V-14B --local-dir wan_models/Wan2.1-T2V-14B
-huggingface-cli download Wan-AI/Wan2.1-I2V-14B-480P --local-dir wan_models/Wan2.1-I2V-14B-480P
+huggingface-cli download Wan-AI/Wan2.2-T2V-A14B --local-dir wan_models/Wan2.2-T2V-A14B
+huggingface-cli download Wan-AI/Wan2.2-I2V-A14B --local-dir wan_models/Wan2.2-I2V-A14B
 ```
 
 ## T2V Training
@@ -42,21 +45,42 @@ data_folder
 ```
 
 ### DMD Training
+
+1. Train the high_noise_model
+
 ```
 torchrun --nnodes=8 --nproc_per_node=8 \
 --rdzv_id=5235 \
 --rdzv_backend=c10d \
 --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
 train.py \
---config_path configs/self_forcing_14b_dmd.yaml \
---logdir logs/self_forcing_14b_dmd \
+--config_path configs/wan22_high.yaml \
+--logdir logs/wan22_high \
 --no_visualize \
 --disable-wandb
 ```
 
-Our training run uses 3000 iterations and completes in under 3 days using 64 H100 GPUs.
+2. Convert the checkpoint into .safetensors format
 
-## I2V-480P Training
+```
+python convert_checkpoint.py --input-checkpoint ./logs/wan22_high_t2v/checkpoint_model_002000/model.pt --output-checkpoint Wan2.2-T2V-A14B/distill_models/high_noise_model/distill_model.safetensors --to-bf16
+```
+
+3. Train the low_noise_model
+
+```
+torchrun --nnodes=8 --nproc_per_node=8 \
+--rdzv_id=5235 \
+--rdzv_backend=c10d \
+--rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
+train.py \
+--config_path configs/wan22_low.yaml \
+--logdir logs/wan22_low \
+--no_visualize \
+--disable-wandb
+```
+
+## I2V Training
 
 ### DataSet Preparation
 
@@ -80,19 +104,40 @@ python scripts/create_lmdb_14b_shards.py \
 ```
 
 ### DMD Training
+
+1. Train the high_noise_model
+
 ```
 torchrun --nnodes=8 --nproc_per_node=8 \
 --rdzv_id=5235 \
 --rdzv_backend=c10d \
 --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
 train.py \
---config_path configs/self_forcing_14b_i2v_dmd.yaml \
---logdir logs/self_forcing_14b_i2v_dmd \
+--config_path configs/wan22_high_i2v.yaml \
+--logdir logs/wan22_high_i2v \
 --no_visualize \
 --disable-wandb
 ```
 
-Our training run uses 1000 iterations and completes in under 12 hours using 64 H100 GPUs.
+2. Convert the checkpoint into .safetensors format
+
+```
+python convert_checkpoint.py --input-checkpoint ./logs/wan22_high_i2v/checkpoint_model_001000/model.pt --output-checkpoint Wan2.2-I2V-A14B/distill_models/high_noise_model/distill_model.safetensors --to-bf16
+```
+
+3. Train the low_noise_model
+
+```
+torchrun --nnodes=8 --nproc_per_node=8 \
+--rdzv_id=5235 \
+--rdzv_backend=c10d \
+--rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
+train.py \
+--config_path configs/wan22_low_i2v.yaml \
+--logdir logs/wan22_low_i2v \
+--no_visualize \
+--disable-wandb
+```
 
 ## Acknowledgements
 This codebase is built on top of the open-source implementation of [CausVid](https://github.com/tianweiy/CausVid), [Self-Forcing](https://github.com/guandeh17/Self-Forcing) and the [Wan2.1](https://github.com/Wan-Video/Wan2.1) repo.
