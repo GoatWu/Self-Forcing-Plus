@@ -1,0 +1,22 @@
+legacy_config_path: configs/self_forcing_dmd.yaml
+default_legacy_config_path: configs/default_config.yaml
+checkpoint_path: ""
+data_path: prompts/MovieGenVideoBench.txt
+extended_prompt_path: ""
+output_folder: outputs/v2_causal_fewstep
+num_output_frames: 21
+i2v: false
+use_ema: false
+num_samples: 1
+save_with_index: true
+runtime:
+  seed: 0
+  mixed_precision: null
+model:
+  model_name: Wan2.1-T2V-14B
+  timestep_shift: 8.0
+  local_attn_size: -1
+  sink_size: 0
+  timestep_bound: 0
+  target: high_noise
+  is_causal: true

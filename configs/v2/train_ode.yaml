@@ -1,0 +1,28 @@
+generator_name: Wan2.1-T2V-1.3B
+timestep_shift: 5.0
+gradient_checkpointing: true
+num_frame_per_block: 3
+independent_first_frame: false
+i2v: false
+
+denoising_step_list: [1000, 750, 500, 250]
+
+lr: 2.0e-06
+beta1: 0.0
+beta2: 0.999
+weight_decay: 0.01
+max_grad_norm: 10.0
+
+data_path: /path/to/ode_lmdb
+batch_size: 1
+
+logdir: logs/ode_regression
+log_iters: 50
+gc_interval: 100
+no_save: false
+no_visualize: true
+disable_wandb: true
+config_name: ode_regression
+
+seed: 0
+mixed_precision: bf16

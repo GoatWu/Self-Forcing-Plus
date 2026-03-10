@@ -1,0 +1,2 @@
+data_path: ./latents
+lmdb_path: ./lmdb

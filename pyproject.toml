@@ -1,0 +1,44 @@
+[project]
+name = "self-forcing"
+version = "0.0.1"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "torch>=2.4.0",
+    "torchvision>=0.19.0",
+    "accelerate>=1.1.1",
+    "draccus>=0.8.0",
+    "transformers>=4.49.0",
+    "tokenizers>=0.20.3",
+    "diffusers==0.31.0",
+    "safetensors",
+    "tqdm",
+    "imageio",
+    "imageio-ffmpeg",
+    "easydict",
+    "ftfy",
+    "einops",
+    "numpy<2",
+    "wandb",
+    "omegaconf",
+    "sentencepiece",
+    "lmdb",
+    "pydantic>=2.10",
+    "huggingface_hub[cli]",
+]
+
+[project.optional-dependencies]
+cu128 = [
+    "torch>=2.4.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sfp*", "scripts*"]

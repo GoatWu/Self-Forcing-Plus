@@ -1,0 +1,5 @@
+data_path: ./latents
+prompt_path: ./prompts
+video_path: ./videos
+lmdb_path: ./lmdb
+num_shards: 16

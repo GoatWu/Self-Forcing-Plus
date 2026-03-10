@@ -1,0 +1,18 @@
+legacy_config_path: configs/self_forcing_dmd.yaml
+default_legacy_config_path: configs/default_config.yaml
+logdir: logs/v2_diffusion
+wandb_save_dir: ""
+no_save: false
+no_visualize: true
+disable_wandb: true
+runtime:
+  seed: 0
+  mixed_precision: null
+model:
+  model_name: Wan2.1-T2V-14B
+  timestep_shift: 8.0
+  local_attn_size: -1
+  sink_size: 0
+  timestep_bound: 0
+  target: high_noise
+  is_causal: true

@@ -5,18 +5,24 @@ import sys
 
 import draccus
 
-import create_lmdb_iterative_legacy as legacy
-from sfp.utils.config import CreateLmdbIterativeConfig
+import create_lmdb_shards_legacy as legacy
+from sfp.utils.config import CreateLmdbShardsConfig
 
 
 @draccus.wrap()
-def main(cfg: CreateLmdbIterativeConfig) -> None:
+def main(cfg: CreateLmdbShardsConfig) -> None:
     argv = [
-        "create_lmdb_iterative_legacy.py",
+        "create_lmdb_shards_legacy.py",
         "--data_path",
         cfg.data_path,
+        "--prompt_path",
+        cfg.prompt_path,
+        "--video_path",
+        cfg.video_path,
         "--lmdb_path",
         cfg.lmdb_path,
+        "--num_shards",
+        str(cfg.num_shards),
     ]
     old_argv = sys.argv
     try:

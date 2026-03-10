@@ -1,0 +1,6 @@
+output_folder: ./ode_pairs
+caption_path: prompts/MovieGenVideoBench.txt
+guidance_scale: 6.0
+runtime:
+  seed: 0
+  mixed_precision: null

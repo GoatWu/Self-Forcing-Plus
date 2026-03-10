@@ -1,0 +1,7 @@
+input_video_folder: ./videos
+output_latent_folder: ./latents
+prompt_folder: ./prompts
+model_name: Wan2.1-T2V-14B
+runtime:
+  seed: 0
+  mixed_precision: null
